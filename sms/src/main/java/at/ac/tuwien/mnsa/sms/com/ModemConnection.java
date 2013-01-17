@@ -27,8 +27,6 @@ public class ModemConnection {
 
 	private LinkedList<String> availablePorts;
 
-	private boolean loggedIn = false;
-
 	private CommPortIdentifier serialPortId;
 	private Enumeration enumComm;
 	private SerialPort serialPort;
@@ -38,15 +36,19 @@ public class ModemConnection {
 	
 	private String portName;
 
-	private int baudrate = 460800;
-	private int dataBits = SerialPort.DATABITS_8;
-	private int stopBits = SerialPort.STOPBITS_1;
-	private int parity = SerialPort.PARITY_NONE;
+    private static int ASCII_NEW_LINE = 10;
+    private static int ASCII_STRG_Z = 26;
+
 	
-	private int serialTimeout = 5000;
-	private int serialThreshold = 1;
+	private static int baudrate = 460800;
+	private static int dataBits = SerialPort.DATABITS_8;
+	private static int stopBits = SerialPort.STOPBITS_1;
+	private static int parity = SerialPort.PARITY_NONE;
 	
-	private int sleeptime = 30;
+	private static int serialTimeout = 5000;
+	private static int serialThreshold = 1;
+	
+	private static int sleeptime = 30;
 
 	public ModemConnection(String portName) {
 		try {
@@ -62,12 +64,13 @@ public class ModemConnection {
 	public void connect() throws ConnectionException {
 		try {
 			this.openSerialPort(this.portName);
+			LOG.debug("Connection established");
 		} catch (SerialPortException e) {
 			throw new ConnectionException(e.getMessage());
 		}
 	}
 
-	private void openSerialPort(String portName) throws SerialPortException {
+	private boolean openSerialPort(String portName) throws SerialPortException {
 		Boolean foundPort = false;
 
 		if (serialPortOpen != false) {
@@ -108,6 +111,7 @@ public class ModemConnection {
 
 		//serialPort.notifyOnDataAvailable(true);
 		
+		
 		try {
 			serialPort.setSerialPortParams(baudrate, dataBits, stopBits, parity);
 			serialPort.setFlowControlMode(SerialPort.FLOWCONTROL_NONE);
@@ -126,9 +130,10 @@ public class ModemConnection {
 			throw new SerialPortException("Couldn't open serial port");
 		}
 		
+		return true;
+		
 
 	}
-
 
 	public void disconnect() throws ConnectionException {
 		this.closeSerialPort();
@@ -136,14 +141,15 @@ public class ModemConnection {
 	
 	private boolean checkPort() {
 
+		System.out.println("Checking port");
 		try {
-			this.sendData("");
-			this.getData();
+			this.sendData("AT");
+			if (this.getData().equals("OK")) return true;;
 		} catch (DataException e) {
 			return false;
 		}
 
-		return true;
+		return false;
 	}
 
 	private void closeSerialPort() {
@@ -181,7 +187,7 @@ public class ModemConnection {
 	}
 
 	private void sendData(String message) throws DataException {
-		message = message + "\n";
+		message = message + "\r\n";
 
 		try {
 			this.clearStream();
@@ -192,16 +198,29 @@ public class ModemConnection {
 		} catch (InterruptedException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
-		}
+		} 
 
+	}
+	
+	private void sendRawData(int message) throws DataException {
+
+		try {
+			this.clearStream();
+			this.outputStream.write(message);
+			Thread.sleep(50);
+		} catch (IOException e) {
+			throw new DataException("Couldn't send data: " + e.getMessage());
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} 
 	}
 
 	private String getData() throws DataException {
 
-		BufferedReader reader = new BufferedReader(new InputStreamReader(
-				inputStream));
+		BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
 		String output = "";
-
+		
 		try {
 			reader.readLine();
 			output = reader.readLine();
@@ -215,27 +234,6 @@ public class ModemConnection {
 
 		return output;
 	}
-
-	private String getValuefromWebDL(String value) throws DataException {
-
-
-		String command = "cat /etc/det.cfg | grep " + value;
-		String data = "";
-		try {
-
-			this.sendData(command);
-			data = this.getData();
-			int pos = data.indexOf("=");
-			data = data.substring(pos + 1);
-
-		} catch (DataException de ) {
-			throw new DataException("COM getValue: " + value + " : " + de.getMessage());
-		}
-
-		return data;
-
-	}
-
 	
 	private void clearStream() {
 
@@ -252,12 +250,85 @@ public class ModemConnection {
 		}
 
 	}
+	
+	private boolean checkResponse(String assertedAnswer) throws DataException {
+		
+		String returnValue = this.getData();
+		LOG.debug("Return value: "+ returnValue);
+		
+		if(returnValue.equals(assertedAnswer)) {
+			return true;
+		}
+		
+		return false;
+		
+	}
+	
+	public void sendSMS(String number, String message) {
+		
+		String initString = "AT+CMGS=\"" + number + "\"";
+		
+		try {
+			this.sendData("AT");
+			LOG.debug("sent AT");
+			checkResponse("OK");
+			this.sendData("AT+CMGF=1");
+			LOG.debug("sent AT+CMGF=1");
+			checkResponse("OK");
+			this.sendData(initString);
+			LOG.debug("sent " + initString);
+			this.sendData(message);
+			LOG.debug("sent " + message);
+			this.sendRawData(ASCII_STRG_Z);
+			LOG.debug("sent 26 ASCII");
 
+			Thread.sleep(5000);
+			checkResponse("OK");
+		} catch (DataException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+	}
+	
+	public void sendSmsPDU(String number, String message) {
+		
+		PDUencode pdu = new PDUencode();
+		String sms = pdu.MakePDUTextGSM(number, message);
+		int length = sms.length()-1;
+		
+		String initString = "AT+CMGS=" + length;
+		
+		
+		try {
+			this.sendData("AT");
+			LOG.debug("sent AT");
+			checkResponse("OK");
+			this.sendData("AT+CMGF=0");
+			LOG.debug("sent AT+CMGF=0");
+			checkResponse("OK");
+			this.sendData(initString);
+			LOG.debug("sent " + initString);
+			this.sendData(sms);
+			LOG.debug("sent " + sms);
+			this.sendRawData(ASCII_STRG_Z);
+			LOG.debug("sent 26 ASCII");
 
-
-
-
-
+			Thread.sleep(5000);
+			checkResponse("OK");
+		} catch (DataException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		
+	}
 
 
 }
